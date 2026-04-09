@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "family-safety-alerts",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-01-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // KV namespaces. Create these with:
+  //   wrangler kv namespace create FAMILY
+  //   wrangler kv namespace create RATE_LIMIT
+  //   wrangler kv namespace create RECENT_INCIDENTS
+  //   wrangler kv namespace create AUTH_FAIL_COUNTS
+  // Then paste the returned ids into the placeholders below.
+  "kv_namespaces": [
+    { "binding": "FAMILY", "id": "REPLACE_WITH_FAMILY_KV_ID" },
+    { "binding": "RATE_LIMIT", "id": "REPLACE_WITH_RATE_LIMIT_KV_ID" },
+    { "binding": "RECENT_INCIDENTS", "id": "REPLACE_WITH_RECENT_INCIDENTS_KV_ID" },
+    { "binding": "AUTH_FAIL_COUNTS", "id": "REPLACE_WITH_AUTH_FAIL_COUNTS_KV_ID" }
+  ],
+
+  // Durable Object: one instance per incident, owns strong-consistency state
+  // and the 10-second cancel alarm.
+  "durable_objects": {
+    "bindings": [
+      { "name": "INCIDENT", "class_name": "Incident" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Incident"] }
+  ]
+
+  // Secrets (set via `wrangler secret put <NAME>`, never committed):
+  //   ADMIN_PIN              — shared PIN appended to `alert` commands
+  //   TWILIO_ACCOUNT_SID     — Twilio account SID
+  //   TWILIO_AUTH_TOKEN      — Twilio auth token (used for API + signature verify)
+  //   TWILIO_FROM            — "whatsapp:+14155238886" style sender
+  //   TWILIO_TEMPLATE_SID    — approved Content Template SID (HX...)
+  //   MAX_ALERTS_PER_MONTH   — optional numeric cap (omit to disable)
+}
