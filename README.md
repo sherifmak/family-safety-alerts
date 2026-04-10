@@ -192,8 +192,8 @@ The codebase is deliberately minimal and un-parameterized — common customizati
 
 The status board and the `status` command format timestamps in `Asia/Beirut` by default (the origin region). Change it in two places:
 
-- `src/statusBoard.ts:7` — inside `beirutTime()`, replace `"Asia/Beirut"` with your IANA timezone (e.g., `"America/New_York"`, `"Europe/London"`, `"Asia/Tokyo"`). The function name itself can stay as a historical artifact or you can rename it.
-- `src/commands.ts:132` — inside `statusCommand`, same replacement.
+- `src/statusBoard.ts:8` — inside `beirutTime()`, replace `"Asia/Beirut"` with your IANA timezone (e.g., `"America/New_York"`, `"Europe/London"`, `"Asia/Tokyo"`). The function name itself can stay as a historical artifact or you can rename it.
+- `src/commands.ts:133` — inside `statusCommand`, same replacement.
 
 Use any IANA timezone string from the [tz database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
 
@@ -202,15 +202,15 @@ Use any IANA timezone string from the [tz database](https://en.wikipedia.org/wik
 `src/checkin.ts` has two regex patterns that match "safe" and "help" free-text responses so family members can reply with typed words instead of tapping a button:
 
 - `SAFE_PATTERN` at `src/checkin.ts:7` — covers English (`safe`, `ok`, `okay`, `fine`, `alright`...) plus Arabic transliterations from the original deployment (`salim`, `salem`, `bkhair`...).
-- `HELP_PATTERN` at `src/checkin.ts:8` — covers English (`help`, `sos`, `emergency`, `trapped`, `injured`...).
+- `HELP_PATTERN` at `src/checkin.ts:9` — covers English (`help`, `sos`, `emergency`, `trapped`, `injured`...).
 
 Edit the alternation lists to add words and transliterations your family would actually use. The patterns are case-insensitive and use word boundaries, so they're safe to extend.
 
 ### Tunable constants
 
 - `CANCEL_WINDOW_MS` (default `10_000` / 10s) at `src/incident.ts:7` — how long the admin has to `cancel` before the alarm fires. Be careful shortening this; 10 seconds is already tight for "oh wait, wrong button".
-- `RATE_LIMIT_MS` (default `300_000` / 5 min) at `src/commands.ts:20` — minimum gap between two alerts. Override per-alert with `alert <pin> force`.
-- `MAX_AUTH_FAILS` (default `3`) at `src/commands.ts:21` — how many wrong-PIN attempts before a 24-hour lockout.
+- `RATE_LIMIT_MS` (default `300_000` / 5 min) at `src/commands.ts:21` — minimum gap between two alerts. Override per-alert with `alert <pin> force`.
+- `MAX_AUTH_FAILS` (default `3`) at `src/commands.ts:22` — how many wrong-PIN attempts before a 24-hour lockout.
 - `INCIDENT_ACTIVE_WINDOW_MS` (default `2 * 60 * 60_000` / 2 hours) at `src/incident.ts:13` — incidents older than this are treated as closed even if the RECENT_INCIDENTS pointer still references them. Prevents ghost status boards.
 
 ### Alert template wording
