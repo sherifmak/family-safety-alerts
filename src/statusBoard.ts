@@ -19,7 +19,10 @@ export function formatStatusBoard(
   family: Array<{ phone: Phone; member: FamilyMember }>,
 ): string {
   const lines: string[] = [];
-  lines.push(`📋 Status — alert at ${beirutTime(state.triggered_at)}`);
+  lines.push(`📋 Status — alert at ${beirutTime(state.triggered_at)} Beirut`);
+  if (state.message) {
+    lines.push(`📝 ${state.message}`);
+  }
   lines.push("");
 
   let safe = 0;
@@ -27,13 +30,23 @@ export function formatStatusBoard(
   for (const { phone, member } of family) {
     const resp = state.responses[phone];
     if (resp?.status === "safe") {
-      lines.push(`✅ ${member.name} (${beirutTime(resp.at)})`);
+      lines.push(`✅ ${member.name} (${beirutTime(resp.at)}) wa.me/${phone.slice(1)}`);
       safe++;
     } else if (resp?.status === "help") {
-      lines.push(`🆘 ${member.name} NEEDS HELP (${beirutTime(resp.at)})`);
+      let helpLine = `🆘 ${member.name} NEEDS HELP (${beirutTime(resp.at)}) wa.me/${phone.slice(1)}`;
+      if (resp.message) {
+        helpLine += `\n   💬 ${resp.message}`;
+      }
+      if (resp.location) {
+        helpLine += `\n   📍 https://maps.google.com/maps?q=${resp.location.lat},${resp.location.lon}`;
+        if (resp.location.address) {
+          helpLine += ` (${resp.location.address})`;
+        }
+      }
+      lines.push(helpLine);
       helpCount++;
     } else {
-      lines.push(`⏳ ${member.name}`);
+      lines.push(`⏳ ${member.name} wa.me/${phone.slice(1)}`);
     }
   }
 
