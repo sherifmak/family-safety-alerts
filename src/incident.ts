@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env, Phone, IncidentState, CheckInStatus } from "./types";
-import { listFamily, getOpenIncidentId, clearOpenIncidentId } from "./kv";
-import { sendTemplate, sendText } from "./twilio";
+import { listOptedInFamily, getOpenIncidentId, clearOpenIncidentId } from "./kv";
+import { sendTemplate, sendStaggered, sendText } from "./twilio";
 import { formatStatusBoard, sendBoard } from "./statusBoard";
 
 const CANCEL_WINDOW_MS = 10 * 1000;
@@ -48,7 +48,7 @@ export class Incident extends DurableObject<Env> {
    * Initialize a fresh incident and schedule the 10s cancel-window alarm.
    * Called by the `alert` admin command.
    */
-  async queueAlert(triggeredBy: Phone): Promise<{ ok: boolean; error?: string }> {
+  async queueAlert(triggeredBy: Phone, test?: boolean, message?: string): Promise<{ ok: boolean; error?: string }> {
     const existing = await this.loadState();
     if (existing && (existing.fired || existing.cancelled)) {
       return { ok: false, error: "already_resolved" };
@@ -65,6 +65,8 @@ export class Incident extends DurableObject<Env> {
       processed_webhooks: [],
       fired: false,
       cancelled: false,
+      test: !!test || undefined,
+      message: message || undefined,
     };
     await this.saveState(state);
     await this.ctx.storage.setAlarm(Date.now() + CANCEL_WINDOW_MS);
@@ -112,37 +114,59 @@ export class Incident extends DurableObject<Env> {
       state.responses[phone] = { status, at: Date.now() };
     }
     await this.saveState(state);
+    await this.broadcastBoard(state);
+    return { ok: true };
+  }
 
-    // Broadcast the updated board to everyone whose window is open. A window
-    // is open for:
-    //   - anyone who has already responded to this incident (they sent an
-    //     inbound, so the 24h window is guaranteed to be open), AND
-    //   - the admin who triggered the alert (they sent `alert`, same reason).
-    // Members who haven't tapped yet have no guaranteed open window, so we
-    // don't send them status updates — they'll see the board when they tap.
-    const family = await listFamily(this.env);
-    const board = formatStatusBoard(state, family);
+  /**
+   * Attach a follow-up text message to an existing HELP response and
+   * re-broadcast the status board. Latest message wins.
+   */
+  async recordMessage(
+    messageSid: string,
+    phone: Phone,
+    text: string,
+  ): Promise<{ ok: boolean; error?: string; deduped?: boolean }> {
+    const state = await this.loadState();
+    if (!state) return { ok: false, error: "no_incident" };
 
-    const openWindowRecipients = family.filter(
-      ({ phone: p }) => state.responses[p] || p === state.triggered_by,
-    );
+    if (state.processed_webhooks.includes(messageSid)) {
+      return { ok: true, deduped: true };
+    }
+    state.processed_webhooks.push(messageSid);
 
-    const results = await Promise.allSettled(
-      openWindowRecipients.map(({ phone: recipient }) =>
-        sendBoard(this.env, recipient, board),
-      ),
-    );
+    const resp = state.responses[phone];
+    if (!resp) return { ok: false, error: "no_response" };
 
-    results.forEach((r, i) => {
-      if (r.status === "rejected") {
-        console.error(
-          `failed to send status board to ${openWindowRecipients[i].phone}:`,
-          r.reason,
-        );
-      }
-    });
-
+    resp.message = text;
     await this.saveState(state);
+    await this.broadcastBoard(state);
+    return { ok: true };
+  }
+
+  /**
+   * Attach location data to an existing response and re-broadcast the
+   * status board. Latest location wins (overwrites previous).
+   */
+  async recordLocation(
+    messageSid: string,
+    phone: Phone,
+    location: { lat: number; lon: number; address?: string },
+  ): Promise<{ ok: boolean; error?: string; deduped?: boolean }> {
+    const state = await this.loadState();
+    if (!state) return { ok: false, error: "no_incident" };
+
+    if (state.processed_webhooks.includes(messageSid)) {
+      return { ok: true, deduped: true };
+    }
+    state.processed_webhooks.push(messageSid);
+
+    const resp = state.responses[phone];
+    if (!resp) return { ok: false, error: "no_response" };
+
+    resp.location = location;
+    await this.saveState(state);
+    await this.broadcastBoard(state);
     return { ok: true };
   }
 
@@ -163,12 +187,15 @@ export class Incident extends DurableObject<Env> {
     state.fired = true;
     await this.saveState(state);
 
-    const family = await listFamily(this.env);
-    const recipients = family;
+    const family = await listOptedInFamily(this.env);
+    const recipients = state.test
+      ? family.filter(({ phone }) => phone === state.triggered_by)
+      : family;
 
-    const results = await Promise.allSettled(
+    const contentVars = { "1": state.message || "A safety alert has been issued" };
+    const results = await sendStaggered(
       recipients.map(({ phone }) =>
-        sendTemplate(this.env, phone, this.env.TWILIO_TEMPLATE_SID),
+        () => sendTemplate(this.env, phone, this.env.TWILIO_TEMPLATE_SID, contentVars),
       ),
     );
 
@@ -183,11 +210,13 @@ export class Incident extends DurableObject<Env> {
 
     // Confirm to the triggering admin.
     try {
+      const prefix = state.test ? "🧪 TEST: " : "";
+      const msgNote = state.message ? `\n📝 ${state.message}` : "";
       await sendText(
         this.env,
         state.triggered_by,
-        `Alert fired. Template delivered to ${delivered}/${recipients.length} family members. ` +
-          `I'll update you here as people check in.`,
+        `${prefix}Alert fired. Template delivered to ${delivered}/${recipients.length} family member${recipients.length === 1 ? "" : "s"}. ` +
+          `I'll update you here as people check in.${msgNote}`,
       );
     } catch (err) {
       console.error("failed to notify admin after alarm fired:", err);
@@ -195,6 +224,33 @@ export class Incident extends DurableObject<Env> {
   }
 
   // ---------- internals ----------
+
+  private async broadcastBoard(state: IncidentState): Promise<void> {
+    const family = await listOptedInFamily(this.env);
+    const scopedFamily = state.test
+      ? family.filter(({ phone: p }) => p === state.triggered_by)
+      : family;
+    const board = formatStatusBoard(state, scopedFamily);
+
+    const openWindowRecipients = scopedFamily.filter(
+      ({ phone: p }) => state.responses[p] || p === state.triggered_by,
+    );
+
+    const results = await sendStaggered(
+      openWindowRecipients.map(({ phone: recipient }) =>
+        () => sendBoard(this.env, recipient, board),
+      ),
+    );
+
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.error(
+          `failed to send status board to ${openWindowRecipients[i].phone}:`,
+          r.reason,
+        );
+      }
+    });
+  }
 
   private async loadState(): Promise<IncidentState | null> {
     return (await this.ctx.storage.get<IncidentState>("state")) ?? null;
