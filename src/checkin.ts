@@ -2,6 +2,10 @@ import type { Env, Phone, CheckInStatus } from "./types";
 import { getFamilyMember } from "./kv";
 import { loadActiveIncident } from "./incident";
 
+/** Pattern to strip from body text before capturing as a follow-up message. */
+const NOISE_PATTERN =
+  /^(help|sos|emergency|trapped|injured|need help|save me|safe|ok|okay|sound|fine|alright|all good|im safe|i'm safe|salim|salem|bkhair|bekhair|ana bkhair)[.!?\s]*$/i;
+
 // Loose matchers for free-text replies from people who don't tap the button.
 // Covers English and a few transliterated Arabic forms ("ana bkhair", "salim").
 const SAFE_PATTERN =
@@ -58,6 +62,15 @@ export async function handleFamilyMessage(
   }
 
   const stub = env.INCIDENT.get(env.INCIDENT.idFromString(active.id));
+
+  // If the sender already checked in as HELP, capture follow-up text.
+  const existing = active.state.responses[sender];
+  if (existing?.status === "help" && body && !NOISE_PATTERN.test(body.trim())) {
+    const msgResult = await stub.recordMessage(messageSid, sender, body.trim());
+    if (msgResult.deduped) return null;
+    return msgResult.ok ? "💬 Got it — status board updated." : null;
+  }
+
   const result = await stub.recordResponse(messageSid, sender, status);
 
   if (!result.ok) {
@@ -65,9 +78,17 @@ export async function handleFamilyMessage(
     return "We got your reply but couldn't record it. Please try tapping the button again.";
   }
 
-  // The Incident DO sends the status board to this recipient as part of the
-  // broadcast, so we don't need to send a separate "thanks" reply here — it
-  // would just produce a noisy two-message sequence in the chat.
+  if (result.deduped) return null;
+
+  // After recording a HELP check-in, prompt for location.
+  if (status === "help") {
+    return (
+      "📍 Can you share your location? Tap ＋ (or the paperclip icon), " +
+      "then *Location*, then *Send your current location*. " +
+      "This helps us find you faster."
+    );
+  }
+
   return null;
 }
 
@@ -79,6 +100,51 @@ export function unknownSenderReply(sender: Phone): string {
     "Hi! I'm the family safety bot. Your number isn't enrolled yet — " +
     `ask the admin to run \`enroll ${sender} <your name>\` to add you.`
   );
+}
+
+/**
+ * Handle an inbound location share. If the sender hasn't checked in yet,
+ * auto-record them as HELP (sharing location during an emergency is a clear
+ * distress signal). If they already checked in, attach the location to their
+ * existing response.
+ */
+export async function handleLocationShare(
+  env: Env,
+  sender: Phone,
+  messageSid: string,
+  location: { lat: number; lon: number; address?: string },
+): Promise<string | null> {
+  const active = await loadActiveIncident(env);
+  if (!active) return null;
+
+  const stub = env.INCIDENT.get(env.INCIDENT.idFromString(active.id));
+  const existing = active.state.responses[sender];
+
+  // No prior check-in → auto-mark as HELP, then attach location.
+  if (!existing) {
+    const resp = await stub.recordResponse(messageSid, sender, "help");
+    if (!resp.ok) {
+      console.error(`recordResponse (auto-help) failed for ${sender}:`, resp.error);
+      return null;
+    }
+    // recordResponse consumed the messageSid for dedupe. Use a derived sid
+    // for the location so it isn't skipped by the processed_webhooks check.
+    const locResult = await stub.recordLocation(`${messageSid}:loc`, sender, location);
+    if (!locResult.ok) {
+      console.error(`recordLocation failed for ${sender}:`, locResult.error);
+    }
+    return "📍 Location received — we've marked you as needing help. The status board has been updated.";
+  }
+
+  // Already checked in — just attach location.
+  const locResult = await stub.recordLocation(messageSid, sender, location);
+  if (!locResult.ok) {
+    console.error(`recordLocation failed for ${sender}:`, locResult.error);
+    return null;
+  }
+  if (locResult.deduped) return null;
+
+  return "📍 Location received — the status board has been updated.";
 }
 
 function resolveStatus(body: string, buttonPayload?: string): CheckInStatus | null {
