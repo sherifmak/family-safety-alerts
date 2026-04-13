@@ -25,6 +25,7 @@ export async function listFamily(
   while (true) {
     const page = await env.FAMILY.list({ cursor });
     for (const key of page.keys) {
+      if (key.name.startsWith("_")) continue; // skip metadata keys
       const member = await getFamilyMember(env, key.name);
       if (member) result.push({ phone: key.name, member });
     }
@@ -32,6 +33,19 @@ export async function listFamily(
     cursor = page.cursor;
   }
   return result;
+}
+
+/**
+ * Like listFamily but only returns members who have explicitly opted in
+ * (i.e., messaged the bot at least once). Only members with opted_in === true
+ * are included. Existing KV entries without the field are treated as NOT
+ * opted in — they must message the bot once to activate.
+ */
+export async function listOptedInFamily(
+  env: Env,
+): Promise<Array<{ phone: Phone; member: FamilyMember }>> {
+  const all = await listFamily(env);
+  return all.filter(({ member }) => member.opted_in === true);
 }
 
 // ---------- Alert rate limiting ----------

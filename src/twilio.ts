@@ -2,6 +2,33 @@ import type { Env, Phone } from "./types";
 
 const TWILIO_BASE = "https://api.twilio.com/2010-04-01";
 
+/** Delay between sequential sends to avoid triggering WhatsApp bulk-send detection. */
+export const STAGGER_DELAY_MS = 500;
+
+/**
+ * Execute an array of async tasks sequentially with a delay between each.
+ * Returns PromiseSettledResult[] (same shape as Promise.allSettled) so call
+ * sites can swap in with minimal changes.
+ */
+export async function sendStaggered<T>(
+  tasks: Array<() => Promise<T>>,
+  delayMs: number = STAGGER_DELAY_MS,
+): Promise<Array<PromiseSettledResult<T>>> {
+  const results: Array<PromiseSettledResult<T>> = [];
+  for (let i = 0; i < tasks.length; i++) {
+    if (i > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      const value = await tasks[i]();
+      results.push({ status: "fulfilled", value });
+    } catch (reason) {
+      results.push({ status: "rejected", reason });
+    }
+  }
+  return results;
+}
+
 function toWhatsApp(phone: Phone): string {
   return phone.startsWith("whatsapp:") ? phone : `whatsapp:${phone}`;
 }
@@ -46,6 +73,40 @@ export async function sendTemplate(
   return twilioPost(env, `/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, params);
 }
 
+const TWILIO_CONTENT_BASE = "https://content.twilio.com/v1";
+
+/**
+ * Create a Content Template via the Twilio Content API.
+ * Returns the ContentSid (HX...).
+ */
+export async function createContentTemplate(
+  env: Env,
+  friendlyName: string,
+  language: string,
+  body: string,
+  variables: Record<string, string>,
+): Promise<string> {
+  const res = await fetch(`${TWILIO_CONTENT_BASE}/Content`, {
+    method: "POST",
+    headers: {
+      Authorization: authHeader(env),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      friendly_name: friendlyName,
+      language,
+      variables,
+      types: { "twilio/text": { body } },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Twilio Content API failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as { sid: string };
+  return data.sid;
+}
+
 async function twilioPost(env: Env, path: string, params: URLSearchParams): Promise<string> {
   const res = await fetch(`${TWILIO_BASE}${path}`, {
     method: "POST",
@@ -55,12 +116,19 @@ async function twilioPost(env: Env, path: string, params: URLSearchParams): Prom
     },
     body: params.toString(),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
     throw new Error(`Twilio POST ${path} failed (${res.status}): ${text}`);
   }
-  const data = (await res.json()) as { sid: string };
-  return data.sid;
+  try {
+    const data = JSON.parse(text) as { sid: string };
+    return data.sid;
+  } catch {
+    // Twilio occasionally returns the SID as plain text.
+    const trimmed = text.trim();
+    if (/^[A-Z]{2}[0-9a-f]{32}$/.test(trimmed)) return trimmed;
+    throw new Error(`Twilio POST ${path}: unexpected response body: ${trimmed.slice(0, 120)}`);
+  }
 }
 
 /**
