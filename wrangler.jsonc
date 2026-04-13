@@ -36,4 +36,5 @@
   //   TWILIO_FROM            — "whatsapp:+14155238886" style sender
   //   TWILIO_TEMPLATE_SID    — approved Content Template SID (HX...)
   //   MAX_ALERTS_PER_MONTH   — optional numeric cap (omit to disable)
+  //   TWILIO_ANNOUNCE_TEMPLATE_SID — Content Template SID for announcements (optional)
 }
